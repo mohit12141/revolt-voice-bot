@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Revolt Voice Bot - Mic Test</title>
+</head>
+<body>
+  <h1>🎤 Revolt Voice Bot - Mic Test</h1>
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn">Stop Recording</button>
+  <p id="status"></p>
+  <h2>Transcription:</h2>
+  <div id="transcription" style="border:1px solid #ccc; padding:10px; min-height:40px;">
+    Waiting for text...
+  </div>
+
+  <script>
+    let ws;
+    let mediaRecorder;
+    let currentUtterance = null; // 🔹 track current speech
+
+    // 🔊 Speak text with browser TTS
+    function speakText(text) {
+      if ('speechSynthesis' in window) {
+        // stop any ongoing speech first
+        speechSynthesis.cancel();
+
+        currentUtterance = new SpeechSynthesisUtterance(text);
+        currentUtterance.lang = "en-US"; 
+        currentUtterance.rate = 1.0;
+        currentUtterance.pitch = 1.0;
+        speechSynthesis.speak(currentUtterance);
+      }
+    }
+
+    document.getElementById("startBtn").onclick = async () => {
+      // 🔹 Stop any ongoing speech if user starts recording again
+      if ('speechSynthesis' in window) {
+        speechSynthesis.cancel();
+      }
+
+      ws = new WebSocket("ws://localhost:3000");
+
+      ws.onopen = () => {
+        document.getElementById("status").textContent = "✅ WebSocket connected, recording started...";
+        console.log("WS connected");
+      };
+
+      ws.onclose = () => {
+        document.getElementById("status").textContent = "❌ WebSocket closed";
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.text) {
+          console.log("📝 Server transcription:", data.text);
+          document.getElementById("transcription").innerText = data.text;
+          speakText(data.text);
+        } else if (data.error) {
+          console.error("❌ Server error:", data.error);
+          document.getElementById("transcription").innerText = "Error: " + data.error;
+        }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          event.data.arrayBuffer().then(buffer => ws.send(buffer));
+        }
+      };
+
+      mediaRecorder.start(250);
+    };
+
+    document.getElementById("stopBtn").onclick = () => {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send("STOP"); // ✅ Ask server to process audio
+      }
+      document.getElementById("status").textContent = "🛑 Recording stopped";
+    };
+  </script>
+</body>
+</html>
