@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Revolt Voice Bot - Auto Listen</title>
+  <title>Revolt Voice Bot - Interruptible</title>
 </head>
 <body>
-  <h1>🎤 Revolt Voice Bot - Auto Listen</h1>
+  <h1>🎤 Revolt Voice Bot - Auto Listen + Interrupt</h1>
   <p id="status">Click start to begin</p>
   <h2>Transcription:</h2>
   <div id="transcription" style="border:1px solid #ccc; padding:10px; min-height:40px;">
@@ -14,42 +14,69 @@
 
   <button id="startBtn">Start</button>
   <button id="stopBtn">Stop</button>
-
   <script>
-    let ws;
-    let mediaRecorder;
-    let audioStream;
-    let currentUtterance = null;
-    let audioContext, analyser, source, dataArray;
-    let silenceTimer;
-    const silenceThreshold = 0.01; // adjust for mic sensitivity
-    const silenceDelay = 1200; // ms of silence before stop
+  let ws;
+  let mediaRecorder;
+  let audioStream;
+  let currentUtterance = null;
+  let audioContext, analyser, source, dataArray;
+  let silenceTimer;
+  const silenceThreshold = 0.01;   // 🔧 adjust mic sensitivity
+  const silenceDelay = 600;        // ms of silence before stop
+  let isBotSpeaking = false;
 
-    // 🔊 Speak text with browser TTS
-    function speakText(text) {
-      if ('speechSynthesis' in window) {
-        speechSynthesis.cancel();
+  // 🔊 Speak text with browser TTS
+  function speakText(text) {
+    if ('speechSynthesis' in window) {
+      stopSpeaking(); // clear any previous speech
+      isBotSpeaking = true;
 
-        currentUtterance = new SpeechSynthesisUtterance(text);
-        currentUtterance.lang = "en-US";
-        currentUtterance.rate = 1.0;
-        currentUtterance.pitch = 1.0;
+      currentUtterance = new SpeechSynthesisUtterance(text);
+      currentUtterance.lang = "en-US";
+      currentUtterance.rate = 1.0;
+      currentUtterance.pitch = 1.0;
 
-        currentUtterance.onend = () => {
-          console.log("✅ Speech ended, restart listening");
-          startListening(); // restart mic after bot finishes
-        };
+      currentUtterance.onstart = () => {
+        document.getElementById("status").textContent = "🔊 Speaking...";
+      };
 
-        speechSynthesis.speak(currentUtterance);
-      }
+      currentUtterance.onend = () => {
+        console.log("✅ Speech ended, restart listening");
+        isBotSpeaking = false;
+        startListening(); // restart mic after bot finishes
+      };
+
+      speechSynthesis.speak(currentUtterance);
     }
+  }
 
-    function detectSilence() {
-      analyser.getFloatTimeDomainData(dataArray);
-      let sumSquares = 0.0;
-      for (const x of dataArray) sumSquares += x * x;
-      const rms = Math.sqrt(sumSquares / dataArray.length);
+  function stopSpeaking() {
+    if (isBotSpeaking) {
+      speechSynthesis.cancel();
+      isBotSpeaking = false;
+      document.getElementById("status").textContent = "🎙️ Listening...";
+    }
+  }
 
+  function detectVoiceActivity() {
+    if (!analyser) return;
+
+    analyser.getFloatTimeDomainData(dataArray);
+    let sumSquares = 0.0;
+    for (const x of dataArray) sumSquares += x * x;
+    const rms = Math.sqrt(sumSquares / dataArray.length);
+
+    if (isBotSpeaking) {
+      // 🎤 User interrupts while bot is speaking
+      if (rms > silenceThreshold * 6) {
+        console.log("⛔ User interrupted bot!");
+        stopSpeaking();        // stop TTS immediately
+        stopListening();       // stop mic session
+        setTimeout(startListening, 200); // restart listening for new speech
+        return;
+      }
+    } else {
+      // 🤫 Silence detection when listening
       if (rms < silenceThreshold) {
         if (!silenceTimer) {
           silenceTimer = setTimeout(stopListening, silenceDelay);
@@ -60,80 +87,84 @@
           silenceTimer = null;
         }
       }
-
-      requestAnimationFrame(detectSilence);
     }
 
-    async function startListening() {
-      if (mediaRecorder && mediaRecorder.state === "recording") return;
+    requestAnimationFrame(detectVoiceActivity);
+  }
 
-      ws = new WebSocket("ws://localhost:3000");
+  async function startListening() {
+    if (mediaRecorder && mediaRecorder.state === "recording") return;
 
-      ws.onopen = async () => {
-        document.getElementById("status").textContent = "🎙️ Listening...";
-        console.log("WS connected");
+    ws = new WebSocket("ws://localhost:3000");
 
-        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm;codecs=opus" });
+    ws.onopen = async () => {
+      document.getElementById("status").textContent = "🎙️ Listening...";
+      console.log("WS connected");
 
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            event.data.arrayBuffer().then(buffer => ws.send(buffer));
-          }
-        };
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(audioStream, { mimeType: "audio/webm;codecs=opus" });
 
-        mediaRecorder.start(250);
-
-        // Setup VAD
-        audioContext = new AudioContext();
-        source = audioContext.createMediaStreamSource(audioStream);
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 2048;
-        dataArray = new Float32Array(analyser.fftSize);
-        source.connect(analyser);
-        detectSilence();
-      };
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.text) {
-          document.getElementById("transcription").innerText = data.text;
-          speakText(data.text);
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          event.data.arrayBuffer().then(buffer => ws.send(buffer));
         }
       };
 
-      ws.onclose = () => {
-        document.getElementById("status").textContent = "❌ Disconnected";
-      };
-    }
+      mediaRecorder.start(250);
 
-    function stopListening() {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      }
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send("STOP");
-      }
-      if (audioStream) {
-        audioStream.getTracks().forEach(track => track.stop());
-      }
-      if (audioContext) {
-        audioContext.close();
-      }
-      document.getElementById("status").textContent = "🤫 Silent, waiting for reply...";
-    }
-
-    document.getElementById("startBtn").onclick = () => {
-      startListening();
+      // Setup analyser for VAD
+      audioContext = new AudioContext();
+      source = audioContext.createMediaStreamSource(audioStream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      dataArray = new Float32Array(analyser.fftSize);
+      source.connect(analyser);
+      detectVoiceActivity();
     };
 
-    document.getElementById("stopBtn").onclick = () => {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-      if (audioStream) audioStream.getTracks().forEach(track => track.stop());
-      if (audioContext) audioContext.close();
-      document.getElementById("status").textContent = "🛑 Stopped manually";
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.text) {
+        document.getElementById("transcription").innerText = data.text;
+        speakText(data.text);
+      }
     };
+
+    ws.onclose = () => {
+      document.getElementById("status").textContent = "❌ Disconnected";
+    };
+  }
+
+  function stopListening() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send("STOP");
+    }
+    if (audioStream) {
+      audioStream.getTracks().forEach(track => track.stop());
+    }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+    document.getElementById("status").textContent = "🤫 Silent, waiting for reply...";
+  }
+
+  document.getElementById("startBtn").onclick = () => {
+    startListening();
+  };
+
+  document.getElementById("stopBtn").onclick = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    if (audioStream) audioStream.getTracks().forEach(track => track.stop());
+    if (audioContext) audioContext.close();
+    stopSpeaking();
+    isBotSpeaking = false;
+    document.getElementById("status").textContent = "🛑 Stopped manually";
+  };
   </script>
 </body>
 </html>
